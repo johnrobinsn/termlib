@@ -33,6 +33,8 @@ import kotlinx.coroutines.withContext
 import java.io.BufferedReader
 import java.io.InputStreamReader
 
+const val escape = "\u001B"
+
 /**
  * Test app screen with buttons to load different test assets.
  */
@@ -70,17 +72,17 @@ fun ShellScreen() {
 
                 // Load welcome message
                 val welcomeText = """
-                    |TermScreen Test Application
+                    |Terminal Test Application
                     |===========================
                     |
                     |Use the buttons below to load different test files:
                     |
-                    |[1m256 Colors[0m - Test 256-color palette rendering
-                    |[1mAttributes[0m - Test bold, italic, underline, etc.
-                    |[1mUnicode[0m    - Test Unicode characters and CJK
-                    |[1mScrolling[0m  - Test scrolling with 25 lines
+                    |$escape[1m256 Colors$escape[0m - Test 256-color palette rendering
+                    |$escape[1mAttributes$escape[0m - Test bold, italic, underline, etc.
+                    |$escape[1mUnicode$escape[0m    - Test Unicode characters and CJK
+                    |$escape[1mScrolling$escape[0m  - Test scrolling with 25 lines
                     |
-                    |[1mKeyboard Input:[0m
+                    |$escape[1mKeyboard Input:$escape[0m
                     |Toggle the keyboard icon to enable typing.
                     |When enabled, you can type and see characters echoed.
                     |Try Ctrl+C, arrow keys, and other special keys!
@@ -109,7 +111,7 @@ fun ShellScreen() {
                 terminal?.let { term ->
                     // Clear screen and scrollback
                     terminalBuffer?.clearScrollback()
-                    term.writeInput("\u001b[2J\u001b[H".toByteArray())
+                    term.writeInput("$escape[2J$escape[H".toByteArray())
 
                     // Load test file
                     context.resources.openRawResource(resourceId).use { inputStream ->
@@ -146,19 +148,19 @@ fun ShellScreen() {
                         terminal?.let { term ->
                             // Clear screen and scrollback
                             terminalBuffer?.clearScrollback()
-                            term.writeInput("\u001b[2J\u001b[H".toByteArray())
+                            term.writeInput("$escape[2J$escape[H".toByteArray())
                             val welcomeText = """
                                 |TermScreen Test Application
                                 |===========================
                                 |
                                 |Use the buttons below to load different test files:
                                 |
-                                |[1m256 Colors[0m - Test 256-color palette rendering
-                                |[1mAttributes[0m - Test bold, italic, underline, etc.
-                                |[1mUnicode[0m    - Test Unicode characters and CJK
-                                |[1mScrolling[0m  - Test scrolling with 25 lines
+                                |$escape[1m256 Colors$escape[0m - Test 256-color palette rendering
+                                |$escape[1mAttributes$escape[0m - Test bold, italic, underline, etc.
+                                |$escape[1mUnicode$escape[0m    - Test Unicode characters and CJK
+                                |$escape[1mScrolling$escape[0m  - Test scrolling with 25 lines
                                 |
-                                |[1mKeyboard Input:[0m
+                                |$escape[1mKeyboard Input:$escape[0m
                                 |Toggle the keyboard icon to enable typing.
                                 |When enabled, you can type and see characters echoed.
                                 |Try Ctrl+C, arrow keys, and other special keys!
