@@ -797,8 +797,13 @@ fun TerminalWithAccessibility(
                         if (selectionManager.mode != SelectionMode.NONE && !selectionManager.isSelecting) {
                             val range = selectionManager.selectionRange
                             if (range != null) {
+                                // Adjust touch position for horizontal pan offset
+                                val adjustedTouchPos = Offset(
+                                    down.position.x + horizontalPanOffset,
+                                    down.position.y
+                                )
                                 val (touchingStart, touchingEnd) = isTouchingHandle(
-                                    down.position,
+                                    adjustedTouchPos,
                                     range,
                                     baseCharWidth,
                                     baseCharHeight
@@ -810,8 +815,9 @@ fun TerminalWithAccessibility(
                                     magnifierPosition = down.position
 
                                     drag(down.id) { change ->
+                                        // Account for horizontal pan offset when calculating column
                                         val newCol =
-                                            (change.position.x / baseCharWidth).toInt()
+                                            ((change.position.x + horizontalPanOffset) / baseCharWidth).toInt()
                                                 .coerceIn(0, screenState.snapshot.cols - 1)
                                         val newRow =
                                             (change.position.y / baseCharHeight).toInt()
@@ -842,30 +848,28 @@ fun TerminalWithAccessibility(
 
                         // 2. Start long press detection for selection
                         // Only start selection if no selection is already active
-                        // TODO: Re-enable after fixing scroll/pan interaction
                         var longPressDetected = false
                         val longPressJob = launch {
-                            // TEMPORARILY DISABLED - interferes with scroll/pan
-                            // delay(viewConfiguration.longPressTimeoutMillis)
-                            // if (gestureType == GestureType.Undetermined &&
-                            //     selectionManager.mode == SelectionMode.NONE
-                            // ) {
-                            //     longPressDetected = true
-                            //     gestureType = GestureType.Selection
-                            //
-                            //     // Start selection
-                            //     val col = (down.position.x / baseCharWidth).toInt()
-                            //         .coerceIn(0, screenState.snapshot.cols - 1)
-                            //     val row = (down.position.y / baseCharHeight).toInt()
-                            //         .coerceIn(0, screenState.snapshot.rows - 1)
-                            //     selectionManager.startSelection(
-                            //         row,
-                            //         col,
-                            //         SelectionMode.BLOCK
-                            //     )
-                            //     showMagnifier = true
-                            //     magnifierPosition = down.position
-                            // }
+                            delay(viewConfiguration.longPressTimeoutMillis)
+                            if (gestureType == GestureType.Undetermined &&
+                                selectionManager.mode == SelectionMode.NONE
+                            ) {
+                                longPressDetected = true
+                                gestureType = GestureType.Selection
+
+                                // Start selection (account for horizontal pan offset)
+                                val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                    .coerceIn(0, screenState.snapshot.cols - 1)
+                                val row = (down.position.y / baseCharHeight).toInt()
+                                    .coerceIn(0, screenState.snapshot.rows - 1)
+                                selectionManager.startSelection(
+                                    row,
+                                    col,
+                                    SelectionMode.BLOCK
+                                )
+                                showMagnifier = true
+                                magnifierPosition = down.position
+                            }
                         }
 
                         // 3. Check for multi-touch (zoom)
@@ -945,7 +949,7 @@ fun TerminalWithAccessibility(
                                     isUserScrolling = true
                                     // Initialize local scroll tracking from current position only
                                     // Don't add totalOffset.y here - let the scroll handler add dragAmount.y
-                                    currentScrollOffset = (screenState.scrollbackPosition * baseCharHeight).toFloat()
+                                    currentScrollOffset = screenState.scrollbackPosition * baseCharHeight
                                     // Apply initial horizontal offset
                                     if (isHorizontalPanEnabled) {
                                         horizontalPanOffset = (horizontalPanOffset - totalOffset.x)
@@ -963,8 +967,9 @@ fun TerminalWithAccessibility(
                             when (gestureType) {
                                 GestureType.Selection -> {
                                     if (selectionManager.isSelecting) {
+                                        // Account for horizontal pan offset when calculating column
                                         val dragCol =
-                                            (change.position.x / baseCharWidth).toInt()
+                                            ((change.position.x + horizontalPanOffset) / baseCharWidth).toInt()
                                                 .coerceIn(0, screenState.snapshot.cols - 1)
                                         val dragRow =
                                             (change.position.y / baseCharHeight).toInt()
