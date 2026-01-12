@@ -418,9 +418,6 @@ fun TerminalWithAccessibility(
     // Horizontal pan state for virtual width
     var horizontalPanOffset by remember(terminalEmulator) { mutableStateOf(0f) }
 
-    // Callback to auto-pan horizontally when typing (set after layout calculations)
-    var autoPanToCaretCallback by remember(terminalEmulator) { mutableStateOf<(() -> Unit)?>(null) }
-
     // Flag to prevent scroll sync feedback loop during user drag
     var isUserScrolling by remember(terminalEmulator) { mutableStateOf(false) }
 
@@ -623,15 +620,13 @@ fun TerminalWithAccessibility(
     // Coroutine scope for animations
     val coroutineScope = rememberCoroutineScope()
 
-    // Setup keyboard input callback to reset scroll position and auto-pan horizontally
+    // Setup keyboard input callback to reset scroll position
     LaunchedEffect(screenState, scrollOffset) {
         keyboardHandler.onInputProcessed = {
             screenState.scrollToBottom()
             coroutineScope.launch {
                 scrollOffset.snapTo(0f)
             }
-            // Auto-pan horizontally to keep cursor visible when typing
-            autoPanToCaretCallback?.invoke()
         }
     }
     val viewConfiguration = LocalViewConfiguration.current
@@ -774,22 +769,21 @@ fun TerminalWithAccessibility(
             }
         }
 
-        // Set up auto-pan callback for keyboard input (only when horizontal panning is enabled)
-        // This is invoked by keyboardHandler.onInputProcessed when user types
-        LaunchedEffect(isHorizontalPanEnabled, baseCharWidth, availableWidth, maxHorizontalPan) {
-            autoPanToCaretCallback = if (isHorizontalPanEnabled) {
-                {
-                    val cursorPixelX = screenState.snapshot.cursorCol * baseCharWidth
-                    val visibleRight = horizontalPanOffset + availableWidth
-                    if (cursorPixelX + baseCharWidth > visibleRight) {
-                        horizontalPanOffset = (cursorPixelX + baseCharWidth - availableWidth + baseCharWidth)
-                            .coerceIn(0f, maxHorizontalPan)
-                    } else if (cursorPixelX < horizontalPanOffset) {
-                        horizontalPanOffset = (cursorPixelX - baseCharWidth).coerceAtLeast(0f)
-                    }
-                }
-            } else {
-                null
+        // Auto-pan horizontally when cursor moves to keep it visible
+        LaunchedEffect(screenState.snapshot.cursorCol) {
+            // Only auto-pan when at bottom (viewing current screen) and not scrolling
+            if (!isHorizontalPanEnabled || screenState.scrollbackPosition != 0 || isUserScrolling) {
+                return@LaunchedEffect
+            }
+
+            val cursorPixelX = screenState.snapshot.cursorCol * baseCharWidth
+            val visibleRight = horizontalPanOffset + availableWidth
+
+            if (cursorPixelX + baseCharWidth > visibleRight) {
+                horizontalPanOffset = (cursorPixelX + baseCharWidth - availableWidth + baseCharWidth)
+                    .coerceIn(0f, maxHorizontalPan)
+            } else if (cursorPixelX < horizontalPanOffset) {
+                horizontalPanOffset = (cursorPixelX - baseCharWidth).coerceAtLeast(0f)
             }
         }
 
@@ -870,31 +864,12 @@ fun TerminalWithAccessibility(
                             }
                         }
 
-                        // 2. Start long press detection for selection
-                        // Only start selection if no selection is already active
+                        // 2. Long press detection for selection
+                        // Instead of using launch{} which causes race conditions,
+                        // we track the start time and check elapsed time in the event loop
                         var longPressDetected = false
-                        val longPressJob = launch {
-                            delay(viewConfiguration.longPressTimeoutMillis)
-                            if (gestureType == GestureType.Undetermined &&
-                                selectionManager.mode == SelectionMode.NONE
-                            ) {
-                                longPressDetected = true
-                                gestureType = GestureType.Selection
-
-                                // Start selection (account for horizontal pan offset)
-                                val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
-                                    .coerceIn(0, screenState.snapshot.cols - 1)
-                                val row = (down.position.y / baseCharHeight).toInt()
-                                    .coerceIn(0, screenState.snapshot.rows - 1)
-                                selectionManager.startSelection(
-                                    row,
-                                    col,
-                                    SelectionMode.BLOCK
-                                )
-                                showMagnifier = true
-                                magnifierPosition = down.position
-                            }
-                        }
+                        val longPressStartTime = System.currentTimeMillis()
+                        val longPressTimeoutMs = viewConfiguration.longPressTimeoutMillis
 
                         // 3. Check for multi-touch (zoom)
                         val secondPointer = withTimeoutOrNull(
@@ -904,7 +879,6 @@ fun TerminalWithAccessibility(
                         }
 
                         if (secondPointer != null) {
-                            longPressJob.cancel()
                             gestureType = GestureType.Zoom
 
                             // Handle zoom using Compose's built-in gesture calculations
@@ -968,7 +942,7 @@ fun TerminalWithAccessibility(
                             if (gestureType == GestureType.Undetermined && !longPressDetected) {
                                 val totalOffset = change.position - down.position
                                 if (totalOffset.getDistanceSquared() > touchSlopSquared) {
-                                    longPressJob.cancel()
+                                    // Movement exceeded touch slop - this is a scroll gesture
                                     gestureType = GestureType.Scroll
                                     isUserScrolling = true
                                     // Initialize local scroll tracking from current position only
@@ -984,6 +958,24 @@ fun TerminalWithAccessibility(
                                         selectionManager.clearSelection()
                                     }
                                     // Don't continue - let the scroll handler run to apply dragAmount
+                                } else {
+                                    // Still within touch slop - check for long press timeout
+                                    val elapsedTime = System.currentTimeMillis() - longPressStartTime
+                                    if (elapsedTime >= longPressTimeoutMs && selectionManager.mode == SelectionMode.NONE) {
+                                        // Long press detected - start selection
+                                        longPressDetected = true
+                                        gestureType = GestureType.Selection
+
+                                        // Account for horizontal pan offset when calculating column
+                                        val col = ((down.position.x + horizontalPanOffset) / baseCharWidth).toInt()
+                                            .coerceIn(0, screenState.snapshot.cols - 1)
+                                        val row = (down.position.y / baseCharHeight).toInt()
+                                            .coerceIn(0, screenState.snapshot.rows - 1)
+
+                                        selectionManager.startSelection(row, col)
+                                        showMagnifier = true
+                                        magnifierPosition = down.position
+                                    }
                                 }
                             }
 
@@ -1038,8 +1030,6 @@ fun TerminalWithAccessibility(
                         }
 
                         // 6. Gesture ended - cleanup
-                        longPressJob.cancel()
-
                         when (gestureType) {
                             GestureType.Scroll -> {
                                 val velocity = velocityTracker.calculateVelocity()
