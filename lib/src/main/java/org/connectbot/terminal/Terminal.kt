@@ -731,8 +731,11 @@ fun TerminalWithAccessibility(
             forcedSize?.first ?: charsPerDimension(availableHeight, baseCharHeight)
 
         // Auto-scroll to bottom when new content arrives (if not manually scrolled)
+        // Only triggers when lines/scrollback size changes AND user was at bottom AND not currently scrolling
         val wasAtBottom = screenState.scrollbackPosition == 0
-        LaunchedEffect(screenState.snapshot.lines.size, screenState.snapshot.scrollback.size) {
+        LaunchedEffect(screenState.snapshot.lines.size, screenState.snapshot.scrollback.size, isUserScrolling) {
+            // Never auto-scroll during user interaction
+            if (isUserScrolling) return@LaunchedEffect
             // Only auto-scroll if user was already at bottom
             if (wasAtBottom && screenState.scrollbackPosition != 0) {
                 screenState.scrollToBottom()
@@ -787,7 +790,7 @@ fun TerminalWithAccessibility(
                 coroutineScope {
                     awaitEachGesture {
                         var gestureType: GestureType = GestureType.Undetermined
-                        var dragScrollOffset = 0f  // Local scroll tracking during drag
+                        var currentScrollOffset = 0f  // Local tracking during drag (avoids async issues)
                         val down = awaitFirstDown(requireUnconsumed = false)
 
                         // 1. Check if touching a selection handle first
@@ -935,15 +938,24 @@ fun TerminalWithAccessibility(
 
                             // Determine gesture if still undetermined
                             if (gestureType == GestureType.Undetermined && !longPressDetected) {
-                                if (dragAmount.getDistanceSquared() > touchSlopSquared) {
+                                val totalOffset = change.position - down.position
+                                if (totalOffset.getDistanceSquared() > touchSlopSquared) {
                                     longPressJob.cancel()
                                     gestureType = GestureType.Scroll
-                                    // Initialize drag scroll offset from current position
-                                    dragScrollOffset = screenState.scrollbackPosition * baseCharHeight
+                                    isUserScrolling = true
+                                    // Initialize local scroll tracking from current position only
+                                    // Don't add totalOffset.y here - let the scroll handler add dragAmount.y
+                                    currentScrollOffset = (screenState.scrollbackPosition * baseCharHeight).toFloat()
+                                    // Apply initial horizontal offset
+                                    if (isHorizontalPanEnabled) {
+                                        horizontalPanOffset = (horizontalPanOffset - totalOffset.x)
+                                            .coerceIn(0f, maxHorizontalPan)
+                                    }
                                     // Clear any active selection when scrolling starts
                                     if (selectionManager.mode != SelectionMode.NONE) {
                                         selectionManager.clearSelection()
                                     }
+                                    // Don't continue - let the scroll handler run to apply dragAmount
                                 }
                             }
 
@@ -969,15 +981,17 @@ fun TerminalWithAccessibility(
                                     // Mark that user is scrolling to prevent sync feedback
                                     isUserScrolling = true
 
-                                    // Update vertical scroll - accumulate in dragScrollOffset
-                                    // Drag down (positive dragAmount.y) = view older content
-                                    // Drag up (negative dragAmount.y) = view newer content
-                                    dragScrollOffset = (dragScrollOffset + dragAmount.y)
+                                    // Update local scroll tracking (avoids async issues with Animatable)
+                                    // Drag up (negative dragAmount.y) = view newer content = decrease scrollback
+                                    // Drag down (positive dragAmount.y) = view older content = increase scrollback
+                                    currentScrollOffset = (currentScrollOffset + dragAmount.y)
                                         .coerceIn(0f, maxScroll)
 
                                     // Update terminal buffer scrollback position
-                                    val scrolledLines = (dragScrollOffset / baseCharHeight).toInt()
-                                    screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                    val scrolledLines = (currentScrollOffset / baseCharHeight).toInt()
+                                    if (scrolledLines != screenState.scrollbackPosition) {
+                                        screenState.scrollBy(scrolledLines - screenState.scrollbackPosition)
+                                    }
 
                                     // Update horizontal pan offset (if virtual width enabled)
                                     // Drag right (negative dragAmount.x) = see content on the left (decrease panOffset)
@@ -999,15 +1013,13 @@ fun TerminalWithAccessibility(
 
                         when (gestureType) {
                             GestureType.Scroll -> {
-                                // Sync scrollOffset from drag position before fling
-                                coroutineScope.launch {
-                                    scrollOffset.snapTo(dragScrollOffset)
-                                }
-
-                                // Apply fling animation
+                                // Apply fling animation (use currentScrollOffset as starting point)
                                 val velocity = velocityTracker.calculateVelocity()
                                 coroutineScope.launch {
-                                    var targetValue = scrollOffset.targetValue
+                                    // Sync scrollOffset from local tracking before fling
+                                    scrollOffset.snapTo(currentScrollOffset)
+
+                                    var targetValue = currentScrollOffset
                                     scrollOffset.animateDecay(
                                         initialVelocity = velocity.y,
                                         animationSpec = splineBasedDecay(density)
