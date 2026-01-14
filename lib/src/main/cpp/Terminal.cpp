@@ -86,6 +86,10 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols)
     if (!mOscSequenceMethod) {
         LOGE("Failed to find onOscSequence method");
     }
+    mCsiSequenceMethod = env->GetMethodID(callbacksClass, "onCsiSequence", "(Ljava/lang/String;[JLjava/lang/String;C)I");
+    if (!mCsiSequenceMethod) {
+        LOGE("Failed to find onCsiSequence method");
+    }
 
     // Cache CellRun class and field IDs
     mCellRunClass = (jclass)env->NewGlobalRef(
@@ -197,11 +201,11 @@ Terminal::Terminal(JNIEnv* env, jobject callbacks, int rows, int cols)
     };
     vterm_screen_set_callbacks(mVts, &mScreenCallbacks, this);
 
-    // Set up OSC fallback handlers for shell integration
+    // Set up fallback handlers for OSC and CSI sequences (shell integration, Kitty keyboard, etc.)
     VTermState* state = vterm_obtain_state(mVt);
     VTermStateFallbacks fallbacks = {
         .control = nullptr,
-        .csi = nullptr,
+        .csi = termCsiFallback,
         .osc = termOscFallback,
         .dcs = nullptr,
         .apc = nullptr,
@@ -576,6 +580,14 @@ int Terminal::termOscFallback(int command, VTermStringFragment frag, void* user)
     }
 
     return 1;  // Indicate we're handling this (continue accumulating)
+}
+
+// CSI sequence fallback handler
+// Handles unrecognized CSI sequences like Kitty keyboard protocol
+int Terminal::termCsiFallback(const char* leader, const long args[], int argcount,
+                              const char* intermed, char command, void* user) {
+    auto* term = static_cast<Terminal*>(user);
+    return term->invokeCsiSequence(leader, args, argcount, intermed, command);
 }
 
 // OSC 52 selection set callback - receives base64-decoded clipboard data from libvterm
@@ -1034,6 +1046,66 @@ int Terminal::invokeOscSequence(int command, const std::string& payload, int cur
 
     // Clean up
     env->DeleteLocalRef(payloadStr);
+
+    return result;
+}
+
+int Terminal::invokeCsiSequence(const char* leader, const long args[], int argcount,
+                                const char* intermed, char command) {
+    if (!mCsiSequenceMethod) {
+        return 0;
+    }
+
+    JNIEnv* env;
+    if (mJavaVM->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+        LOGE("invokeCsiSequence: Failed to get JNI env");
+        return 0;
+    }
+
+    // Convert leader to jstring
+    jstring leaderStr = env->NewStringUTF(leader ? leader : "");
+    if (!leaderStr) {
+        LOGE("Failed to create jstring for CSI leader");
+        return 0;
+    }
+
+    // Convert args to jlongArray
+    // Note: args is 'const long*' but jlong is int64_t, so we need to convert
+    jlongArray argsArray = env->NewLongArray(argcount);
+    if (!argsArray) {
+        LOGE("Failed to create jlongArray for CSI args");
+        env->DeleteLocalRef(leaderStr);
+        return 0;
+    }
+    if (argcount > 0) {
+        // Copy to jlong array to handle potential size difference
+        std::vector<jlong> jargs(argcount);
+        for (int i = 0; i < argcount; i++) {
+            jargs[i] = static_cast<jlong>(args[i]);
+        }
+        env->SetLongArrayRegion(argsArray, 0, argcount, jargs.data());
+    }
+
+    // Convert intermed to jstring
+    jstring intermedStr = env->NewStringUTF(intermed ? intermed : "");
+    if (!intermedStr) {
+        LOGE("Failed to create jstring for CSI intermed");
+        env->DeleteLocalRef(leaderStr);
+        env->DeleteLocalRef(argsArray);
+        return 0;
+    }
+
+    // Call the Java callback
+    jint result = env->CallIntMethod(mCallbacks, mCsiSequenceMethod,
+                                     leaderStr, argsArray, intermedStr, (jchar)command);
+
+    LOGD("invokeCsiSequence: leader='%s', argcount=%d, intermed='%s', command='%c' -> result=%d",
+         leader ? leader : "", argcount, intermed ? intermed : "", command, result);
+
+    // Clean up
+    env->DeleteLocalRef(leaderStr);
+    env->DeleteLocalRef(argsArray);
+    env->DeleteLocalRef(intermedStr);
 
     return result;
 }

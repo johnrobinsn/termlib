@@ -60,6 +60,10 @@ private:
     // libvterm state fallback for OSC sequences
     static int termOscFallback(int command, VTermStringFragment frag, void* user);
 
+    // libvterm state fallback for CSI sequences (Kitty keyboard protocol, etc.)
+    static int termCsiFallback(const char* leader, const long args[], int argcount,
+                               const char* intermed, char command, void* user);
+
     // libvterm selection callbacks for OSC 52 clipboard
     static int termSelectionSet(VTermSelectionMask mask, VTermStringFragment frag, void* user);
     static int termSelectionQuery(VTermSelectionMask mask, void* user);
@@ -74,6 +78,8 @@ private:
     int invokePopScrollbackLine(int cols, VTermScreenCell* cells);
     void invokeKeyboardOutput(const char* data, size_t len);
     int invokeOscSequence(int command, const std::string& payload, int cursorRow, int cursorCol);
+    int invokeCsiSequence(const char* leader, const long args[], int argcount,
+                          const char* intermed, char command);
 
     // Helper functions
     static bool cellStyleEqual(const VTermScreenCell& a, const VTermScreenCell& b);
@@ -112,6 +118,7 @@ private:
     jmethodID mPopScrollbackMethod;
     jmethodID mKeyboardInputMethod;
     jmethodID mOscSequenceMethod;
+    jmethodID mCsiSequenceMethod;
 
     // Cached Java class and field IDs for CellRun
     jclass mCellRunClass;

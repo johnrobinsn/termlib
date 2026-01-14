@@ -104,6 +104,35 @@ sealed interface TerminalEmulator {
     )
 
     val dimensions: TerminalDimensions
+
+    /**
+     * Enable or disable the Kitty keyboard protocol user preference.
+     * The protocol is only active when both the user has enabled it AND
+     * an application has pushed a mode via CSI > flags u.
+     */
+    fun setKittyKeyboardEnabled(enabled: Boolean)
+
+    /**
+     * Check if a key should be encoded using Kitty protocol.
+     * @param vTermKey The VTermKey code
+     * @param modifiers Modifier mask (Shift=1, Alt=2, Ctrl=4)
+     * @return true if this key should use Kitty encoding
+     */
+    fun shouldEncodeKitty(vTermKey: Int, modifiers: Int): Boolean
+
+    /**
+     * Encode a key with modifiers using Kitty protocol.
+     * @param vTermKey The VTermKey code
+     * @param modifiers Modifier mask (Shift=1, Alt=2, Ctrl=4)
+     * @return ByteArray containing the escape sequence, or null if not applicable
+     */
+    fun encodeKittyKey(vTermKey: Int, modifiers: Int): ByteArray?
+
+    /**
+     * Write keyboard output directly (bypassing native terminal).
+     * Used for Kitty-encoded keys.
+     */
+    fun writeKeyboardOutput(data: ByteArray)
 }
 
 class TerminalEmulatorFactory {
@@ -257,6 +286,9 @@ internal class TerminalEmulatorImpl(
     // Parser for OSC sequences
     private val oscParser = OscParser()
 
+    // Kitty keyboard protocol handler
+    private val kittyProtocol = KittyKeyboardProtocol()
+
     // ================================================================================
     // Public API
     // ================================================================================
@@ -393,6 +425,37 @@ internal class TerminalEmulatorImpl(
 
         setAnsiPalette(ansiColors)
         setDefaultColors(defaultForeground, defaultBackground)
+    }
+
+    /**
+     * Enable or disable the Kitty keyboard protocol user preference.
+     */
+    override fun setKittyKeyboardEnabled(enabled: Boolean) {
+        kittyProtocol.isEnabledByUser = enabled
+    }
+
+    /**
+     * Check if a key should be encoded using Kitty protocol.
+     */
+    override fun shouldEncodeKitty(vTermKey: Int, modifiers: Int): Boolean {
+        return kittyProtocol.shouldEncode(vTermKey, modifiers)
+    }
+
+    /**
+     * Encode a key with modifiers using Kitty protocol.
+     */
+    override fun encodeKittyKey(vTermKey: Int, modifiers: Int): ByteArray? {
+        return kittyProtocol.encodeKey(vTermKey, modifiers)
+    }
+
+    /**
+     * Write keyboard output directly (bypassing native terminal).
+     * Used for Kitty-encoded keys.
+     */
+    override fun writeKeyboardOutput(data: ByteArray) {
+        handler.post {
+            onKeyboardInput.invoke(data)
+        }
     }
 
     // ================================================================================
@@ -598,6 +661,48 @@ internal class TerminalEmulatorImpl(
             }
         }
         return 1
+    }
+
+    override fun onCsiSequence(leader: String, args: LongArray, intermed: String, command: Char): Int {
+        // Handle Kitty keyboard protocol sequences
+        // Format: CSI [leader] [args] [intermed] command
+        // For Kitty protocol, command is 'u':
+        //   CSI > flags u  - push mode (leader=">", args=[flags])
+        //   CSI < count u  - pop mode (leader="<", args=[count] or empty for 1)
+        //   CSI ? u        - query mode (leader="?", args empty)
+
+        if (command != 'u') {
+            // Not a Kitty keyboard sequence
+            return 0
+        }
+
+        when (leader) {
+            ">" -> {
+                // Push mode: CSI > flags u
+                val flags = if (args.isNotEmpty()) args[0].toInt() else 0
+                kittyProtocol.pushMode(flags)
+                return 1
+            }
+            "<" -> {
+                // Pop mode: CSI < count u
+                val count = if (args.isNotEmpty()) args[0].toInt() else 1
+                kittyProtocol.popMode(count)
+                return 1
+            }
+            "?" -> {
+                // Query mode: CSI ? u - respond with current flags
+                val response = kittyProtocol.generateQueryResponse()
+                // Send response back to application via PTY
+                handler.post {
+                    onKeyboardInput.invoke(response)
+                }
+                return 1
+            }
+            else -> {
+                // Unknown Kitty sequence variant
+                return 0
+            }
+        }
     }
 
     /**

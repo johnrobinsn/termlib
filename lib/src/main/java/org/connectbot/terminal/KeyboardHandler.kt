@@ -108,6 +108,17 @@ internal class KeyboardHandler(
         // Check if this is a special key that libvterm handles
         val vtermKey = mapToVTermKey(key)
         if (vtermKey != null) {
+            // Check if Kitty keyboard protocol should handle this key
+            if (terminalEmulator.shouldEncodeKitty(vtermKey, modifiers)) {
+                val encoded = terminalEmulator.encodeKittyKey(vtermKey, modifiers)
+                if (encoded != null) {
+                    terminalEmulator.writeKeyboardOutput(encoded)
+                    modifierManager?.clearTransients()
+                    onInputProcessed?.invoke()
+                    return true
+                }
+            }
+            // Fall back to normal libvterm handling
             terminalEmulator.dispatchKey(modifiers, vtermKey)
             modifierManager?.clearTransients()
             onInputProcessed?.invoke()

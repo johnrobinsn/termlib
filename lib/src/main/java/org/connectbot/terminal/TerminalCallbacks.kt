@@ -109,6 +109,18 @@ internal interface TerminalCallbacks {
      * @return 1 if handled, 0 otherwise
      */
     fun onOscSequence(command: Int, payload: String, cursorRow: Int, cursorCol: Int): Int
+
+    /**
+     * Called when an unrecognized CSI (Control Sequence Introducer) sequence is received.
+     * Used for Kitty keyboard protocol and other extended sequences.
+     *
+     * @param leader Leading private-mode characters (e.g., ">", "<", "?")
+     * @param args Numeric arguments from the sequence
+     * @param intermed Intermediate characters (between args and final char)
+     * @param command The final character (e.g., 'u' for Kitty keyboard)
+     * @return 1 if handled, 0 otherwise
+     */
+    fun onCsiSequence(leader: String, args: LongArray, intermed: String, command: Char): Int
 }
 
 /**
