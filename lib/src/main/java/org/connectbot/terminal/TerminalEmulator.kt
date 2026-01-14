@@ -133,6 +133,27 @@ sealed interface TerminalEmulator {
      * Used for Kitty-encoded keys.
      */
     fun writeKeyboardOutput(data: ByteArray)
+
+    /**
+     * Check if a key should be encoded using modifyOtherKeys protocol.
+     * Unlike Kitty protocol, this is automatically enabled when an app
+     * sends CSI > 4 ; mode m (no user preference needed).
+     *
+     * @param vTermKey The VTermKey code
+     * @param modifiers Modifier mask (Shift=1, Alt=2, Ctrl=4)
+     * @return true if this key should use modifyOtherKeys encoding
+     */
+    fun shouldEncodeModifyOtherKeys(vTermKey: Int, modifiers: Int): Boolean
+
+    /**
+     * Encode a key with modifiers using modifyOtherKeys protocol.
+     * Format: CSI 27 ; modifier ; keycode ~
+     *
+     * @param vTermKey The VTermKey code
+     * @param modifiers Modifier mask (Shift=1, Alt=2, Ctrl=4)
+     * @return ByteArray containing the escape sequence, or null if not applicable
+     */
+    fun encodeModifyOtherKeysKey(vTermKey: Int, modifiers: Int): ByteArray?
 }
 
 class TerminalEmulatorFactory {
@@ -289,6 +310,9 @@ internal class TerminalEmulatorImpl(
     // Kitty keyboard protocol handler
     private val kittyProtocol = KittyKeyboardProtocol()
 
+    // xterm modifyOtherKeys protocol handler
+    private val modifyOtherKeysProtocol = ModifyOtherKeysProtocol()
+
     // ================================================================================
     // Public API
     // ================================================================================
@@ -348,8 +372,28 @@ internal class TerminalEmulatorImpl(
 
     /**
      * Dispatch a key event to the terminal.
+     * Checks for Kitty or modifyOtherKeys encoding first.
      */
     override fun dispatchKey(modifiers: Int, key: Int) {
+        // Check if this key should be encoded using Kitty protocol
+        if (kittyProtocol.shouldEncode(key, modifiers)) {
+            val encoded = kittyProtocol.encodeKey(key, modifiers)
+            if (encoded != null) {
+                handler.post { onKeyboardInput.invoke(encoded) }
+                return
+            }
+        }
+
+        // Check if this key should be encoded using modifyOtherKeys protocol
+        if (modifyOtherKeysProtocol.shouldEncode(key, modifiers)) {
+            val encoded = modifyOtherKeysProtocol.encodeKey(key, modifiers)
+            if (encoded != null) {
+                handler.post { onKeyboardInput.invoke(encoded) }
+                return
+            }
+        }
+
+        // Default: let native terminal handle it
         terminalNative.dispatchKey(modifiers, key)
     }
 
@@ -456,6 +500,20 @@ internal class TerminalEmulatorImpl(
         handler.post {
             onKeyboardInput.invoke(data)
         }
+    }
+
+    /**
+     * Check if a key should be encoded using modifyOtherKeys protocol.
+     */
+    override fun shouldEncodeModifyOtherKeys(vTermKey: Int, modifiers: Int): Boolean {
+        return modifyOtherKeysProtocol.shouldEncode(vTermKey, modifiers)
+    }
+
+    /**
+     * Encode a key with modifiers using modifyOtherKeys protocol.
+     */
+    override fun encodeModifyOtherKeysKey(vTermKey: Int, modifiers: Int): ByteArray? {
+        return modifyOtherKeysProtocol.encodeKey(vTermKey, modifiers)
     }
 
     // ================================================================================
@@ -664,45 +722,53 @@ internal class TerminalEmulatorImpl(
     }
 
     override fun onCsiSequence(leader: String, args: LongArray, intermed: String, command: Char): Int {
-        // Handle Kitty keyboard protocol sequences
-        // Format: CSI [leader] [args] [intermed] command
-        // For Kitty protocol, command is 'u':
+        // Handle keyboard protocol sequences:
+        //
+        // Kitty keyboard protocol (command 'u'):
         //   CSI > flags u  - push mode (leader=">", args=[flags])
         //   CSI < count u  - pop mode (leader="<", args=[count] or empty for 1)
         //   CSI ? u        - query mode (leader="?", args empty)
+        //
+        // xterm modifyOtherKeys (command 'm'):
+        //   CSI > 4 ; mode m - set modifyOtherKeys mode (0=off, 1=partial, 2=full)
+        //   CSI > 4 m        - disable modifyOtherKeys (mode defaults to 0)
 
-        if (command != 'u') {
-            // Not a Kitty keyboard sequence
-            return 0
-        }
-
-        when (leader) {
-            ">" -> {
-                // Push mode: CSI > flags u
-                val flags = if (args.isNotEmpty()) args[0].toInt() else 0
-                kittyProtocol.pushMode(flags)
-                return 1
-            }
-            "<" -> {
-                // Pop mode: CSI < count u
-                val count = if (args.isNotEmpty()) args[0].toInt() else 1
-                kittyProtocol.popMode(count)
-                return 1
-            }
-            "?" -> {
-                // Query mode: CSI ? u - respond with current flags
-                val response = kittyProtocol.generateQueryResponse()
-                // Send response back to application via PTY
-                handler.post {
-                    onKeyboardInput.invoke(response)
+        when (command) {
+            'u' -> {
+                // Kitty keyboard protocol
+                when (leader) {
+                    ">" -> {
+                        // Push mode: CSI > flags u
+                        val flags = if (args.isNotEmpty()) args[0].toInt() else 0
+                        kittyProtocol.pushMode(flags)
+                        return 1
+                    }
+                    "<" -> {
+                        // Pop mode: CSI < count u
+                        val count = if (args.isNotEmpty()) args[0].toInt() else 1
+                        kittyProtocol.popMode(count)
+                        return 1
+                    }
+                    "?" -> {
+                        // Query mode: CSI ? u - respond with current flags
+                        val response = kittyProtocol.generateQueryResponse()
+                        // Send response back to application via PTY
+                        handler.post { onKeyboardInput.invoke(response) }
+                        return 1
+                    }
                 }
-                return 1
             }
-            else -> {
-                // Unknown Kitty sequence variant
-                return 0
+            'm' -> {
+                // xterm modifyOtherKeys: CSI > 4 ; mode m
+                if (leader == ">" && args.isNotEmpty() && args[0] == 4L) {
+                    val mode = if (args.size > 1) args[1].toInt() else 0
+                    modifyOtherKeysProtocol.setMode(mode)
+                    return 1
+                }
             }
         }
+
+        return 0  // Not handled
     }
 
     /**
