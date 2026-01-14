@@ -1039,6 +1039,24 @@ fun TerminalWithAccessibility(
                                 val hasVerticalIntent = kotlin.math.abs(velocity.y) > kotlin.math.abs(velocity.x) ||
                                     kotlin.math.abs(velocity.y) > 100f
 
+                                // Horizontal flick detection - jump to edges instantly
+                                // Flick right (positive velocity.x) = jump to left edge
+                                // Flick left (negative velocity.x) = jump to right edge
+                                val horizontalFlickThreshold = 1500f  // pixels per second
+                                val hasHorizontalFlick = isHorizontalPanEnabled &&
+                                    kotlin.math.abs(velocity.x) > horizontalFlickThreshold &&
+                                    kotlin.math.abs(velocity.x) > kotlin.math.abs(velocity.y) * 2
+
+                                if (hasHorizontalFlick) {
+                                    horizontalPanOffset = if (velocity.x > 0) {
+                                        // Flicking right - jump to left edge
+                                        0f
+                                    } else {
+                                        // Flicking left - jump to right edge
+                                        maxHorizontalPan
+                                    }
+                                }
+
                                 Log.d("Terminal", "SCROLL END: gen=$thisGestureGeneration, scrollbackPos=${screenState.scrollbackPosition}, currentScrollOffset=$currentScrollOffset, velocity=$velocity, hasVerticalIntent=$hasVerticalIntent, gestureMaxScroll=$gestureMaxScroll")
 
                                 val gestureGen = thisGestureGeneration  // Capture for coroutine
